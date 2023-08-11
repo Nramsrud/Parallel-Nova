@@ -37,7 +37,7 @@ use crate::{
     snark::RelaxedR1CSSNARKTrait,
     AbsorbInROTrait, Group, ROConstants, ROConstantsCircuit, ROConstantsTrait, ROTrait,
   },
-  Commitment,
+  Commitment, RecursiveSNARK,
 };
 use ark_std::{end_timer, start_timer};
 use bellperson::{
@@ -52,6 +52,9 @@ use core::marker::PhantomData;
 use ff::Field;
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
+use std::time::{Instant, Duration};
+use std::fs;
+use std::io::Write;
 
 // TODO - This is replicated from lib but we should actually instead have another file for it and use both here and there
 
@@ -178,25 +181,25 @@ where
   C2: StepCircuit<G2::Scalar>,
 {
   // The running instance of the primary
-  W_primary: RelaxedR1CSWitness<G1>,
-  U_primary: RelaxedR1CSInstance<G1>,
+  pub W_primary: RelaxedR1CSWitness<G1>,
+  pub U_primary: RelaxedR1CSInstance<G1>,
   // The new instance of the primary
-  w_primary: RelaxedR1CSWitness<G1>,
-  u_primary: RelaxedR1CSInstance<G1>,
+  pub w_primary: RelaxedR1CSWitness<G1>,
+  pub u_primary: RelaxedR1CSInstance<G1>,
   // The running instance of the secondary
-  W_secondary: RelaxedR1CSWitness<G2>,
-  U_secondary: RelaxedR1CSInstance<G2>,
+  pub W_secondary: RelaxedR1CSWitness<G2>,
+  pub U_secondary: RelaxedR1CSInstance<G2>,
   // The running instance of the secondary
-  w_secondary: RelaxedR1CSWitness<G2>,
-  u_secondary: RelaxedR1CSInstance<G2>,
-  i_start: u64,
-  i_end: u64,
-  z_start_primary: Vec<G1::Scalar>,
-  z_end_primary: Vec<G1::Scalar>,
-  z_start_secondary: Vec<G2::Scalar>,
-  z_end_secondary: Vec<G2::Scalar>,
-  _p_c1: PhantomData<C1>,
-  _p_c2: PhantomData<C2>,
+  pub w_secondary: RelaxedR1CSWitness<G2>,
+  pub u_secondary: RelaxedR1CSInstance<G2>,
+  pub i_start: u64,
+  pub i_end: u64,
+  pub z_start_primary: Vec<G1::Scalar>,
+  pub z_end_primary: Vec<G1::Scalar>,
+  pub z_start_secondary: Vec<G2::Scalar>,
+  pub z_end_secondary: Vec<G2::Scalar>,
+  pub _p_c1: PhantomData<C1>,
+  pub _p_c2: PhantomData<C2>,
 }
 
 impl<G1, G2, C1, C2> NovaTreeNode<G1, G2, C1, C2>
@@ -220,6 +223,9 @@ where
   ) -> Result<Self, NovaError> {
     // base case for the primary
     let mut cs_primary: SatisfyingAssignment<G1> = SatisfyingAssignment::new();
+    //* Read out how long this clone step takes */
+    let start = Instant::now();
+    //* */
     let inputs_primary: NovaAugmentedParallelCircuitInputs<G2> =
       NovaAugmentedParallelCircuitInputs::new(
         pp.r1cs_shape_secondary.get_digest(),
@@ -239,17 +245,45 @@ where
         None,
         None,
       );
+    //* */
+    println!("New! node input primary assignment took: {:?}", start.elapsed());
+    //* */
 
+    //* Read out how long this clone step takes */
+    let start = Instant::now();
+    //* */
     let circuit_primary: NovaAugmentedParallelCircuit<G2, C1> = NovaAugmentedParallelCircuit::new(
       pp.augmented_circuit_params_primary.clone(),
       Some(inputs_primary),
       c_primary.clone(),
       pp.ro_consts_circuit_primary.clone(),
     );
+
+    //* */
+    println!("New! circuit primary clone assignment took: {:?}", start.elapsed());
+    //* */
+    //* Read out how long this clone step takes */
+    let start = Instant::now();
+    //* */    
+
     let _ = circuit_primary.synthesize(&mut cs_primary);
+    //* */
+    println!("New! circuit primary synth assignment took: {:?}", start.elapsed());
+    //* Read out how long this clone step takes */
+    let start = Instant::now();
+    //* */         
+
     let (u_primary, w_primary) = cs_primary
       .r1cs_instance_and_witness(&pp.r1cs_shape_primary, &pp.ck_primary)
       .map_err(|_e| NovaError::UnSat)?;
+
+    //* */
+    println!("New! instance witness primary assignment took: {:?}", start.elapsed());
+    //* Read out how long this clone step takes */
+    let start = Instant::now();
+    //* */         
+
+
 
     // base case for the secondary
     let mut cs_secondary: SatisfyingAssignment<G2> = SatisfyingAssignment::new();
@@ -273,6 +307,15 @@ where
         None,
         None,
       );
+
+
+    //* */
+    println!("New! inputs for secondary assignment took: {:?}", start.elapsed());
+    //* */
+
+    //* Read out how long this clone step takes */
+    let start = Instant::now();
+    //* */          
     let circuit_secondary: NovaAugmentedParallelCircuit<G1, C2> = NovaAugmentedParallelCircuit::new(
       pp.augmented_circuit_params_secondary.clone(),
       Some(inputs_secondary),
@@ -284,12 +327,28 @@ where
       .r1cs_instance_and_witness(&pp.r1cs_shape_secondary, &pp.ck_secondary)
       .map_err(|_e| NovaError::UnSat)?;
 
+
+    //* */
+    println!("New! establishing secondary circuit, synth and instance took: {:?}", start.elapsed());
+    //* */
+
+    //* Read out how long this clone step takes */
+    let start = Instant::now();
+    //* */        
+
     // IVC proof for the primary circuit
     let w_primary = RelaxedR1CSWitness::from_r1cs_witness(&pp.r1cs_shape_primary, &w_primary);
     let u_primary =
       RelaxedR1CSInstance::from_r1cs_instance(&pp.ck_primary, &pp.r1cs_shape_primary, &u_primary);
     let W_primary = w_primary.clone();
     let U_primary = u_primary.clone();
+
+    //* */
+    println!("New! IVC proof for primary took: {:?}", start.elapsed());
+    //* */
+    //* Read out how long this clone step takes */
+    let start = Instant::now();
+    //* */    
 
     // IVC proof of the secondary circuit
     let w_secondary =
@@ -302,6 +361,11 @@ where
     let W_secondary = w_secondary.clone();
     let U_secondary = u_secondary.clone();
 
+
+    //* */
+    println!("New! IVC proof for secondary took: {:?}", start.elapsed());
+    //* */
+
     if z_start_primary.len() != pp.F_arity_primary
       || z_start_secondary.len() != pp.F_arity_secondary
     {
@@ -310,6 +374,11 @@ where
 
     let i_start = i;
     let i_end = i + 1;
+
+    //* */
+    println!("NEW for i_start and i_end: {:?}, {:?}", i_start, i_end);
+    //* */
+
 
     Ok(Self {
       W_primary,
@@ -346,6 +415,13 @@ where
       return Err(NovaError::InvalidNodeMerge);
     }
 
+    //* */
+    println!("MERGE for i_start and i_end: {:?}, {:?}", self.i_start, self.i_end);
+
+    //* Read out how long this step takes */
+    let start = Instant::now();
+    //* */    
+
     // First we fold the secondary instances of both the left and right children in the secondary curve
     let (nifs_left_secondary, (left_U_secondary, left_W_secondary)) = NIFS::prove(
       &pp.ck_secondary,
@@ -357,6 +433,14 @@ where
       &self.w_secondary,
       false,
     )?;
+
+      //* */
+      println!("MERGE! Fold proof for secondary left and right took: {:?}", start.elapsed());
+      //* */
+      //* Read out how long this step takes */
+      let start = Instant::now();
+      //* */   
+
     let (nifs_right_secondary, (right_U_secondary, right_W_secondary)) = NIFS::prove(
       &pp.ck_secondary,
       &pp.ro_consts_secondary,
@@ -367,6 +451,12 @@ where
       &right.w_secondary,
       false,
     )?;
+    //* */
+    println!("MERGE! Fold proof for right secondary took: {:?}", start.elapsed());
+    //* */
+      //* Read out how long this step takes */
+      let start = Instant::now();
+      //* */   
     let (nifs_secondary, (U_secondary, W_secondary)) = NIFS::prove(
       &pp.ck_secondary,
       &pp.ro_consts_secondary,
@@ -378,9 +468,19 @@ where
       true,
     )?;
 
+      //* */
+      println!("MERGE! Fold proof for secondary instance took: {:?}", start.elapsed());
+      //* */
+
+
     // Next we construct a proof of this folding and of the invocation of F
 
     let mut cs_primary: SatisfyingAssignment<G1> = SatisfyingAssignment::new();
+
+      //* Read out how long this step takes */
+      let start = Instant::now();
+      //* */  
+
 
     let inputs_primary: NovaAugmentedParallelCircuitInputs<G2> =
       NovaAugmentedParallelCircuitInputs::new(
@@ -402,6 +502,14 @@ where
         Some(Commitment::<G2>::decompress(&nifs_secondary.comm_T)?),
       );
 
+        //* */
+        println!("MERGE! Instantiation of inputs for merge fold took: {:?}", start.elapsed());
+        //* */
+        //* Read out how long this step takes */
+          let start = Instant::now();
+          //* */  
+
+
     let circuit_primary: NovaAugmentedParallelCircuit<G2, C1> = NovaAugmentedParallelCircuit::new(
       pp.augmented_circuit_params_primary.clone(),
       Some(inputs_primary),
@@ -410,13 +518,22 @@ where
     );
     let _ = circuit_primary.synthesize(&mut cs_primary);
 
+      //* */
+      println!("MERGE! cloning of primary circuit took: {:?}", start.elapsed());
+      //* */
     let (u_primary, w_primary) = cs_primary
-      .r1cs_instance_and_witness(&pp.r1cs_shape_primary, &pp.ck_primary)
-      .map_err(|_e| NovaError::UnSat)?;
+    .r1cs_instance_and_witness(&pp.r1cs_shape_primary, &pp.ck_primary)
+    .map_err(|_e| NovaError::UnSat)?;
 
     let u_primary =
       RelaxedR1CSInstance::from_r1cs_instance(&pp.ck_primary, &pp.r1cs_shape_primary, &u_primary);
     let w_primary = RelaxedR1CSWitness::from_r1cs_witness(&pp.r1cs_shape_primary, &w_primary);
+
+
+      //* Read out how long this step takes */
+      let start = Instant::now();
+      //* */  
+
 
     // Now we fold the instances of the primary proof
     let (nifs_left_primary, (left_U_primary, left_W_primary)) = NIFS::prove(
@@ -429,6 +546,14 @@ where
       &self.w_primary,
       false,
     )?;
+
+      //* */
+      println!("MERGE! folding instances of left primary took: {:?}", start.elapsed());
+      //* */
+      //* Read out how long this step takes */
+      let start = Instant::now();
+      //* */  
+
     let (nifs_right_primary, (right_U_primary, right_W_primary)) = NIFS::prove(
       &pp.ck_primary,
       &pp.ro_consts_primary,
@@ -439,6 +564,15 @@ where
       &right.w_primary,
       false,
     )?;
+
+      //* */
+      println!("MERGE! folding instances of right primary took: {:?}", start.elapsed());
+      //* */
+
+      //* Read out how long this step takes */
+      let start = Instant::now();
+      //* */   
+
     let (nifs_primary, (U_primary, W_primary)) = NIFS::prove(
       &pp.ck_primary,
       &pp.ro_consts_primary,
@@ -450,8 +584,18 @@ where
       true,
     )?;
 
+
+      //* */
+      println!("MERGE! folding primary took: {:?}", start.elapsed());
+      //* */
+
     // Next we construct a proof of this folding in the secondary curve
     let mut cs_secondary: SatisfyingAssignment<G2> = SatisfyingAssignment::new();
+
+
+    //* Read out how long this step takes */
+    let start = Instant::now();
+    //* */   
 
     let inputs_secondary: NovaAugmentedParallelCircuitInputs<G1> =
       NovaAugmentedParallelCircuitInputs::<G1>::new(
@@ -473,6 +617,7 @@ where
         Some(Commitment::<G1>::decompress(&nifs_primary.comm_T)?),
       );
 
+
     let circuit_secondary: NovaAugmentedParallelCircuit<G1, C2> = NovaAugmentedParallelCircuit::new(
       pp.augmented_circuit_params_secondary.clone(),
       Some(inputs_secondary),
@@ -493,6 +638,11 @@ where
     );
     let w_secondary = RelaxedR1CSWitness::from_r1cs_witness(&pp.r1cs_shape_secondary, &w_secondary);
 
+
+      //* */
+      println!("MERGE! instantiating for secondary took: {:?}", start.elapsed());
+      //* */
+ 
     // Name each of these to match struct fields
     let i_start = self.i_start.clone();
     let i_end = right.i_end.clone();
@@ -524,6 +674,149 @@ where
       _p_c1: Default::default(),
       _p_c2: Default::default(),
     })
+  }
+
+
+  pub fn convert(    
+    pp: &PublicParams<G1, G2, C1, C2>,
+    r_snark: RecursiveSNARK<G1, G2, C1, C2>,//res from recursiveSNARK unwrapped
+    c_primary: C1, //circuit object with r1cs and witness
+    c_secondary: C2, //default test circuit
+    i: u64, //number of steps iterated in the recursive snark - 1
+    z_start_primary: Vec<G1::Scalar>, // left public inputs
+    z_end_primary: Vec<G1::Scalar>, // right public inputs 
+    z_start_secondary: Vec<G2::Scalar>,// left z0
+    z_end_secondary: Vec<G2::Scalar>, // right z0
+  ) -> Result<Self, NovaError> {
+    if z_start_primary.len() != pp.F_arity_primary || z_start_secondary.len() != pp.F_arity_secondary {
+      return Err(NovaError::InvalidInitialInputLength);
+    }
+
+
+
+        // base case for the primary
+        let mut cs_primary: SatisfyingAssignment<G1> = SatisfyingAssignment::new();
+        let inputs_primary: NovaAugmentedParallelCircuitInputs<G2> =
+          NovaAugmentedParallelCircuitInputs::new(
+            pp.r1cs_shape_secondary.get_digest(),
+            G1::Scalar::from(i.try_into().unwrap()),
+            G1::Scalar::from((i).try_into().unwrap()),
+            G1::Scalar::from((i + 1).try_into().unwrap()),
+            G1::Scalar::from((i + 1).try_into().unwrap()),
+            z_start_primary.clone(),//z0 primary as start
+            r_snark.zi_primary.clone(),//zi primary from rsnark is the end result
+            z_start_primary.clone(),//z start for right instance open
+            z_end_primary.clone(), // z end for right insnace open 
+            Some(r_snark.r_U_secondary.clone()), // U secondary from rsnark
+            Some(r_snark.l_u_secondary.clone()), // u secondary from rsnark
+            None, // none right U secondary open
+            None, // none right u secondary open
+            None, //none
+            None, //none
+            None, //none
+          );
+
+          let circuit_primary: NovaAugmentedParallelCircuit<G2, C1> = NovaAugmentedParallelCircuit::new(
+            pp.augmented_circuit_params_primary.clone(),
+            Some(inputs_primary),
+            c_primary.clone(),
+            pp.ro_consts_circuit_primary.clone(),
+          );
+          let _ = circuit_primary.synthesize(&mut cs_primary);
+          let (u_primary, w_primary) = cs_primary
+            .r1cs_instance_and_witness(&pp.r1cs_shape_primary, &pp.ck_primary)
+            .map_err(|_e| NovaError::UnSat)?;
+
+            // base case for the secondary
+        let mut cs_secondary: SatisfyingAssignment<G2> = SatisfyingAssignment::new();
+
+        let inputs_secondary: NovaAugmentedParallelCircuitInputs<G1> =
+          NovaAugmentedParallelCircuitInputs::new(
+            pp.r1cs_shape_primary.get_digest(),
+            G2::Scalar::from(i),
+            G2::Scalar::from(i),
+            G2::Scalar::from(i + 1),
+            G2::Scalar::from(i + 1),
+            z_start_secondary.clone(),//zi secondary from rsnark as start
+            r_snark.zi_secondary.clone(),//z end secondary is open
+            z_start_secondary.clone(),//z start for right instance open
+            z_end_secondary.clone(), // z end for right insnace open 
+            Some(r_snark.r_U_primary.clone()), // U secondary from rsnark
+            Some(r_snark.l_u_primary.clone()), // u secondary from rsnark
+            None, // none right U secondary open
+            None, // none right u secondary open
+            None, //none
+            None, //none
+            None, //none
+          );  
+
+          let circuit_secondary: NovaAugmentedParallelCircuit<G1, C2> = NovaAugmentedParallelCircuit::new(
+            pp.augmented_circuit_params_secondary.clone(),
+            Some(inputs_secondary),
+            c_secondary.clone(),
+            pp.ro_consts_circuit_secondary.clone(),
+          );
+          let _ = circuit_secondary.synthesize(&mut cs_secondary);
+          let (u_secondary, w_secondary) = cs_secondary
+            .r1cs_instance_and_witness(&pp.r1cs_shape_secondary, &pp.ck_secondary)
+            .map_err(|_e| NovaError::UnSat)?;      
+
+
+        // IVC proof for the primary circuit
+        // let w_primary = RelaxedR1CSWitness::from_r1cs_witness(&pp.r1cs_shape_primary, r_snark.l_w_primary);
+        // let u_primary =
+        //   RelaxedR1CSInstance::from_r1cs_instance(&pp.ck_primary, &pp.r1cs_shape_primary, r_snark.l_u_primary);
+
+        let w_primary = r_snark.l_w_primary.clone();
+        let u_primary = r_snark.l_u_primary.clone();
+        let W_primary = w_primary.clone();
+        let U_primary = u_primary.clone();
+
+
+        // IVC proof of the secondary circuit
+        // let w_secondary =
+        //   RelaxedR1CSWitness::<G2>::from_r1cs_witness(&pp.r1cs_shape_secondary, r_snark.l_w_secondary);
+        // let u_secondary = RelaxedR1CSInstance::<G2>::from_r1cs_instance(
+        //   &pp.ck_secondary,
+        //   &pp.r1cs_shape_secondary,
+        //   r_snark.l_u_secondary,
+        // );
+
+        let w_secondary = r_snark.l_w_secondary.clone();
+        let u_secondary = r_snark.l_u_secondary.clone();
+        let W_secondary = w_secondary.clone();
+        let U_secondary = u_secondary.clone();
+
+        if z_start_primary.len() != pp.F_arity_primary
+        || z_start_secondary.len() != pp.F_arity_secondary
+        {
+          return Err(NovaError::InvalidStepOutputLength);
+        }
+
+        let i_start = i;
+        let i_end = i + 1;
+
+
+        Ok(Self {
+          W_primary,
+          U_primary,
+          w_primary,
+          u_primary,
+          W_secondary,
+          U_secondary,
+          w_secondary,
+          u_secondary,
+          i_start,
+          i_end,
+          z_start_primary,
+          z_end_primary,
+          z_start_secondary,
+          z_end_secondary,
+          _p_c1: Default::default(),
+          _p_c2: Default::default(),
+        })
+
+
   }
 }
 
@@ -559,6 +852,11 @@ where
     // Tuple's structure is (index, zi_primary, zi_secondary)
     let mut zi = Vec::<(usize, Vec<G1::Scalar>, Vec<G2::Scalar>)>::new();
     // First input value of Z0, these steps can't be done in parallel
+
+
+    //* Read out how long this step takes */
+    let start = Instant::now();
+    //* */   
     zi.push((0, z0_primary.clone(), z0_secondary.clone()));
     for i in 1..steps {
       let (index, prev_primary, prev_secondary) = &zi[i as usize - 1];
@@ -568,7 +866,15 @@ where
         c_secondary.output(&prev_secondary),
       ));
     }
-    // Do calculate node tree in parallel
+
+    //* */
+    println!("ParallelSNARK New! instantiating zi took: {:?}", start.elapsed());
+    //* */
+
+    //* Read out how long this step takes */
+    let start = Instant::now();
+    //* */                     
+     // Do calculate node tree in parallel
     let nodes = zi
       .par_chunks(2)
       .map(|item| {
@@ -601,6 +907,11 @@ where
         }
       })
       .collect();
+
+      //* */
+      println!("ParallelSNARK New! par_chunk-ing all nodes took: {:?}", start.elapsed());
+      //* */
+
     // Create a new parallel prover wit basic leafs
     Self { nodes }
   }
@@ -610,10 +921,20 @@ where
     // Calculate the max height of the tree
     // ⌈log2(n)⌉ + 1
     let max_height = ((self.nodes.len() as f64).log2().ceil() + 1f64) as usize;
+    
+    //custom
+    println!("number of nodes: {:?}", self.nodes.len());
+    println!("Height of node tree: {:?}", max_height);
+    //
+
 
     // Build up the tree with max given height
     for level in 0..max_height {
-      // Exist if we on the root of the tree
+      //custom
+      println!("Generating proofs for height: {:?}", level);
+      let start = Instant::now();
+       //
+      // Exit if we on the root of the tree
       if self.nodes.len() == 1 {
         break;
       }
@@ -632,6 +953,8 @@ where
           _ => panic!("Invalid chunk size"),
         })
         .collect();
+      println!("RecursiveSNARK creation for heigh {:?} took {:?}", level, start.elapsed());
+      println!("Remaining nodes: {:?}", self.nodes.len());
     }
   }
 
